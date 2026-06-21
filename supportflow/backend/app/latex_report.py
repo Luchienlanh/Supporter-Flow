@@ -276,6 +276,7 @@ def _tex_steps(steps: list[TroubleshootingStep]) -> str:
 
 
 def _latex_escape(value: str) -> str:
+    value = _normalize_for_latex(value)
     replacements = {
         "\\": r"\textbackslash{}",
         "&": r"\&",
@@ -296,6 +297,26 @@ def _latex_escape(value: str) -> str:
             escaped += r"\allowbreak{}"
         parts.append(escaped)
     return "".join(parts)
+
+
+def _normalize_for_latex(value: str) -> str:
+    replacements = {
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2026": "...",
+        "\u00a0": " ",
+        "\u200b": "",
+        "\ufeff": "",
+        "\u2192": "->",
+        "\u2265": ">=",
+        "\u2264": "<=",
+        "\u00d7": "x",
+    }
+    return "".join(replacements.get(char, char) for char in value)
 
 
 def _clip(value: str, limit: int) -> str:

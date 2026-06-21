@@ -1,18 +1,35 @@
 % SupportFlow company-style issue report template.
 % Replace this file later with your company's official LaTeX format.
-% Compile with XeLaTeX when the report contains Unicode text.
+% Compatible with pdfLaTeX, XeLaTeX, and LuaLaTeX.
 \documentclass[11pt,a4paper]{article}
 
 \usepackage[a4paper,margin=18mm]{geometry}
 \usepackage{array}
 \usepackage{enumitem}
 \usepackage{fancyhdr}
-\usepackage{fontspec}
+\usepackage{iftex}
 \usepackage{hyperref}
 \usepackage{tabularx}
 \usepackage{xcolor}
 
-\IfFontExistsTF{Arial}{\setmainfont{Arial}}{\setmainfont{Latin Modern Roman}}
+\ifPDFTeX
+  \usepackage[utf8]{inputenc}
+  \usepackage[T1]{fontenc}
+  \usepackage{lmodern}
+  \usepackage{textcomp}
+  \DeclareUnicodeCharacter{2018}{`}
+  \DeclareUnicodeCharacter{2019}{'}
+  \DeclareUnicodeCharacter{201C}{``}
+  \DeclareUnicodeCharacter{201D}{''}
+  \DeclareUnicodeCharacter{2013}{-}
+  \DeclareUnicodeCharacter{2014}{-}
+  \DeclareUnicodeCharacter{2026}{...}
+  \DeclareUnicodeCharacter{00A0}{ }
+\else
+  \usepackage{fontspec}
+  \IfFontExistsTF{Arial}{\setmainfont{Arial}}{\setmainfont{Latin Modern Roman}}
+\fi
+
 \definecolor{brand}{HTML}{176B9A}
 \definecolor{ink}{HTML}{172033}
 \definecolor{muted}{HTML}{52677C}

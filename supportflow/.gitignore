@@ -10,3 +10,4 @@ frontend/dist/
 frontend/.vite/
 frontend/*.tsbuildinfo
 PLAN.md
+exports
