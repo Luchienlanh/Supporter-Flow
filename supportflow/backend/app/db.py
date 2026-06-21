@@ -275,6 +275,7 @@ def _case_record(row: sqlite3.Row, output_row: sqlite3.Row | None) -> CaseRecord
         source=row["source"],
         title=row["title"],
         body=row["body"],
+        error_logs=row["error_logs"],
         environment=row["environment"],
         product_area=row["product_area"],
         status=row["status"],

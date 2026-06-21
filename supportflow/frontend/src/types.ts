@@ -46,6 +46,7 @@ export type CaseRecord = {
   source: string;
   title: string;
   body: string;
+  error_logs: string;
   environment: string;
   product_area: string;
   status: string;
@@ -91,4 +92,11 @@ export type KbArticle = {
   markdown: string;
   source_case_id?: number | null;
   created_at: string;
+};
+
+export type LatexReportResponse = {
+  case_id: number;
+  filename: string;
+  path: string;
+  tex: string;
 };

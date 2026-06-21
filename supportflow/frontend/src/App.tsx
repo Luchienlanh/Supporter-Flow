@@ -5,6 +5,7 @@ import {
   Check,
   Clipboard,
   DownloadCloud,
+  FileDown,
   FileText,
   Github,
   Loader2,
@@ -17,6 +18,7 @@ import {
 } from "lucide-react";
 import {
   analyzeCase,
+  generateLatexReport,
   getHealth,
   importGithubIssue,
   importStackOverflowQuestion,
@@ -26,6 +28,7 @@ import type {
   AnalyzeResponse,
   CaseDraft,
   HealthResponse,
+  LatexReportResponse,
   ProviderName,
 } from "./types";
 
@@ -78,7 +81,8 @@ export default function App() {
   const [issueUrl, setIssueUrl] = useState("");
   const [stackOverflowUrl, setStackOverflowUrl] = useState("");
   const [result, setResult] = useState<AnalyzeResponse | null>(null);
-  const [busy, setBusy] = useState<"analyze" | "github" | "stackoverflow" | "save" | "boot" | null>("boot");
+  const [latexReport, setLatexReport] = useState<LatexReportResponse | null>(null);
+  const [busy, setBusy] = useState<"analyze" | "github" | "stackoverflow" | "save" | "latex" | "boot" | null>("boot");
   const [error, setError] = useState("");
   const [copied, setCopied] = useState("");
 
@@ -116,6 +120,7 @@ export default function App() {
     setBusy("analyze");
     setError("");
     setResult(null);
+    setLatexReport(null);
     try {
       const nextResult = await analyzeCase(draft, provider);
       setResult(nextResult);
@@ -184,6 +189,23 @@ export default function App() {
       await saveKbArticle(result.case.id, currentOutput.kb_article);
     } catch (saveError) {
       setError(errorMessage(saveError));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleGenerateLatex() {
+    if (!result?.case.id || !currentOutput || busy) {
+      return;
+    }
+    setBusy("latex");
+    setError("");
+    try {
+      const report = await generateLatexReport(result.case.id, provider);
+      setLatexReport(report);
+      downloadTexFile(report);
+    } catch (latexError) {
+      setError(errorMessage(latexError));
     } finally {
       setBusy(null);
     }
@@ -456,7 +478,12 @@ export default function App() {
                   {busy === "save" ? <Loader2 className="spin" size={16} /> : <Save size={16} />}
                   Save KB
                 </button>
+                <button className="secondary-button" disabled={busy === "latex"} onClick={handleGenerateLatex} type="button">
+                  {busy === "latex" ? <Loader2 className="spin" size={16} /> : <FileDown size={16} />}
+                  Export LaTeX
+                </button>
               </div>
+              {latexReport ? <p className="export-note">Saved {latexReport.filename}</p> : null}
               <div className="internal-notes">
                 <strong>Internal notes</strong>
                 <p>{currentOutput.internal_notes}</p>
@@ -487,4 +514,16 @@ function SkeletonOutput() {
 
 function errorMessage(value: unknown) {
   return value instanceof Error ? value.message : "Unexpected error.";
+}
+
+function downloadTexFile(report: LatexReportResponse) {
+  const blob = new Blob([report.tex], { type: "application/x-tex;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = report.filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }

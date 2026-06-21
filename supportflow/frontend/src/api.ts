@@ -5,6 +5,7 @@ import type {
   GithubCaseDraft,
   HealthResponse,
   KbArticle,
+  LatexReportResponse,
   ProviderName,
   StackOverflowCaseDraft,
 } from "./types";
@@ -64,5 +65,12 @@ export function saveKbArticle(caseId: number, markdown: string) {
   return request<KbArticle>("/api/kb", {
     method: "POST",
     body: JSON.stringify({ case_id: caseId, markdown }),
+  });
+}
+
+export function generateLatexReport(caseId: number, provider: ProviderName) {
+  return request<LatexReportResponse>(`/api/cases/${caseId}/latex`, {
+    method: "POST",
+    body: JSON.stringify({ provider }),
   });
 }

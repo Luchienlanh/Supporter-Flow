@@ -16,11 +16,14 @@ from .models import (
     GithubImportRequest,
     HealthResponse,
     KbArticle,
+    LatexReportRequest,
+    LatexReportResponse,
     SaveKbRequest,
     StackOverflowCaseDraft,
     StackOverflowImportRequest,
 )
 from .providers import ProviderConfigError, get_default_provider, provider_health
+from .latex_report import generate_latex_report
 from .services import analyze_case
 from .stackoverflow_import import fetch_question
 
@@ -119,6 +122,24 @@ def save_kb(payload: SaveKbRequest) -> KbArticle:
     title = payload.title or _title_from_markdown(markdown) or record.title
     category = payload.category or record.category or "Other"
     return db.save_kb_article(payload.case_id, title, category, markdown)
+
+
+@app.post("/api/cases/{case_id}/latex", response_model=LatexReportResponse)
+def create_latex_report(case_id: int, payload: LatexReportRequest) -> LatexReportResponse:
+    record = db.get_case(case_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Case not found.")
+    if record.output is None:
+        raise HTTPException(status_code=400, detail="Case must be analyzed before exporting LaTeX.")
+    try:
+        return generate_latex_report(record, payload)
+    except ProviderConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except HTTPError as exc:
+        detail = f"LLM provider request failed: {exc.response.status_code} {exc.response.text[:300]}"
+        raise HTTPException(status_code=502, detail=detail) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.get("/api/kb", response_model=list[KbArticle])

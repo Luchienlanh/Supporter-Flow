@@ -1,5 +1,6 @@
 .env
 supportflow.db
+exports/
 *.log
 *.err
 backend/__pycache__/
@@ -9,4 +10,3 @@ frontend/dist/
 frontend/.vite/
 frontend/*.tsbuildinfo
 PLAN.md
-

@@ -71,6 +71,7 @@ class CaseRecord(BaseModel):
     source: str
     title: str
     body: str
+    error_logs: str = ""
     environment: str
     product_area: str
     status: str
@@ -113,6 +114,20 @@ class KbArticle(BaseModel):
     markdown: str
     source_case_id: int | None = None
     created_at: str
+
+
+class LatexReportRequest(BaseModel):
+    provider: ProviderName | None = None
+    company_name: str = Field(default="SupportFlow Technical Support", min_length=2, max_length=120)
+    prepared_for: str = Field(default="Customer / Community User", min_length=2, max_length=120)
+    prepared_by: str = Field(default="SupportFlow Agent", min_length=2, max_length=120)
+
+
+class LatexReportResponse(BaseModel):
+    case_id: int
+    filename: str
+    path: str
+    tex: str
 
 
 class HealthResponse(BaseModel):

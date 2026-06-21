@@ -6,9 +6,8 @@ from typing import Any
 
 from . import db
 from .models import AgentOutput, CaseAnalyzeRequest, TroubleshootingStep
-from .prompts import build_messages
 from .providers import ProviderConfigError, get_client
-from .retrieval import search_documents
+from .workflow import build_support_workflow
 
 
 ALLOWED_CATEGORIES = {"API", "Auth", "SDK", "Database", "Deployment", "Billing", "Bug", "Usage", "Other"}
@@ -17,21 +16,16 @@ ALLOWED_PRIORITIES = {"low", "medium", "high", "urgent"}
 
 def analyze_case(request: CaseAnalyzeRequest) -> tuple[int, AgentOutput, list[str]]:
     case_id = db.create_case(request.model_dump())
-    docs = search_documents(" ".join([request.title, request.body, request.error_logs, request.product_area]))
     client = get_client(request.provider)
-    messages = build_messages(request, docs)
     try:
-        result = client.chat(messages)
-        try:
-            raw = parse_json_object(result.content)
-        except ValueError as parse_error:
-            raw = fallback_raw_output(result.content, str(parse_error))
-        output = normalize_output(raw, result.provider, result.model)
+        state = build_support_workflow().invoke({"case": request, "client": client})
+        raw = state["raw"]
+        output = normalize_output(raw, state["provider"], state["model"])
         db.save_case_output(case_id, output, raw)
     except Exception:
         db.mark_case_failed(case_id)
         raise
-    return case_id, output, [doc["title"] for doc in docs]
+    return case_id, output, [doc["title"] for doc in state.get("docs", [])]
 
 
 def parse_json_object(text: str) -> dict[str, Any]:

@@ -493,6 +493,14 @@ textarea:focus {
   line-height: 1.5;
 }
 
+.export-note {
+  margin: 10px 0 0;
+  color: #52677c;
+  font-size: 12px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
 .empty-state {
   display: grid;
   place-items: center;
