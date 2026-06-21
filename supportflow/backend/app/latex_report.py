@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import re
 from datetime import datetime
@@ -9,7 +10,7 @@ from typing import Any, TypedDict
 from langchain_core.runnables import RunnableLambda, RunnableSequence
 
 from . import db
-from .models import CaseRecord, LatexReportRequest, LatexReportResponse, TroubleshootingStep
+from .models import AgentOutput, CaseRecord, LatexReportRequest, LatexReportResponse, TroubleshootingStep
 from .providers import LLMClient, get_client
 
 
@@ -55,6 +56,7 @@ def draft_report_fields(state: LatexReportState) -> LatexReportState:
     output = case.output
     if output is None:
         raise ValueError("A LaTeX report can only be generated from an analyzed case.")
+    safe_output = _support_output_for_prompt(output)
 
     raw = _call_report_json(
         state["client"],
@@ -92,7 +94,7 @@ Error logs:
 {_clip(case.error_logs or "Not provided", 1600)}
 
 Analyzed output:
-{json.dumps(output.model_dump(), ensure_ascii=False)}
+{json.dumps(safe_output, ensure_ascii=False)}
 """,
     )
     return {**state, "raw_fields": raw}
@@ -103,14 +105,15 @@ def normalize_report_fields(state: LatexReportState) -> LatexReportState:
     defaults = _default_fields(case)
     raw = state.get("raw_fields", {})
 
+    default_answer = defaults["answer_summary"]
     fields = {
         "document_title": _clean_text(raw.get("document_title")) or defaults["document_title"],
         "question_summary": _clean_text(raw.get("question_summary")) or defaults["question_summary"],
-        "answer_summary": _clean_text(raw.get("answer_summary")) or defaults["answer_summary"],
+        "answer_summary": _clean_report_answer(raw.get("answer_summary"), default_answer),
         "resolution_status": _clean_text(raw.get("resolution_status")) or defaults["resolution_status"],
         "follow_up_actions": _clean_list(raw.get("follow_up_actions")) or defaults["follow_up_actions"],
         "kb_summary": _clean_text(raw.get("kb_summary")) or defaults["kb_summary"],
-        "internal_notes": _clean_text(raw.get("internal_notes")) or defaults["internal_notes"],
+        "internal_notes": _clean_internal_notes(raw.get("internal_notes")) or defaults["internal_notes"],
     }
     return {**state, "fields": fields}
 
@@ -141,6 +144,7 @@ def render_latex_report(state: LatexReportState) -> LatexReportState:
         "category": _tex_text(output.category),
         "priority": _tex_text(output.priority.upper()),
         "analysis_model": _tex_text(f"{output.provider} / {output.model}"),
+        "original_issue": _tex_original_issue(_original_issue_text(case)),
         "question_summary": _tex_block(fields["question_summary"]),
         "answer_summary": _tex_block(fields["answer_summary"]),
         "troubleshooting_items": _tex_steps(output.troubleshooting_steps),
@@ -193,11 +197,11 @@ def _default_fields(case: CaseRecord) -> dict[str, Any]:
     return {
         "document_title": "Technical Support Issue Report",
         "question_summary": output.summary,
-        "answer_summary": output.customer_reply,
+        "answer_summary": _support_reply_text(output.customer_reply),
         "resolution_status": "Pending customer confirmation",
         "follow_up_actions": ["Confirm the requester can reproduce the resolution.", "Save verified findings to the knowledge base."],
         "kb_summary": _plain_markdown(output.kb_article),
-        "internal_notes": output.internal_notes,
+        "internal_notes": _clean_internal_notes(output.internal_notes),
     }
 
 
@@ -217,14 +221,288 @@ def _clean_text(value: Any) -> str:
 
 def _clean_list(value: Any) -> list[str]:
     if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()][:6]
-    if isinstance(value, str) and value.strip():
-        return [value.strip()]
+        candidates = value
+    elif isinstance(value, dict):
+        candidates = [value]
+    elif isinstance(value, str) and value.strip():
+        parsed = _parse_structured_string(value)
+        candidates = parsed if isinstance(parsed, list) else [parsed or value]
+    else:
+        return []
+
+    items = []
+    for item in candidates:
+        text = _humanize_list_item(item)
+        if text:
+            items.append(_plain_markdown(text))
+        if len(items) >= 6:
+            break
+    return items
+
+
+def _clean_report_answer(value: Any, fallback: str) -> str:
+    text = _clean_text(value)
+    if not text:
+        return fallback
+    if _looks_jsonish(text):
+        return _plain_markdown(_support_reply_text(text)) or fallback
+    return _plain_markdown(text)
+
+
+def _support_output_for_prompt(output: AgentOutput) -> dict[str, Any]:
+    return {
+        "summary": output.summary,
+        "category": output.category,
+        "priority": output.priority,
+        "customer_reply": _support_reply_text(output.customer_reply),
+        "troubleshooting_steps": [step.model_dump() for step in output.troubleshooting_steps],
+        "kb_article": _plain_markdown(output.kb_article),
+        "internal_notes": _clean_internal_notes(output.internal_notes),
+        "tags": output.tags,
+        "provider": output.provider,
+        "model": output.model,
+    }
+
+
+def _original_issue_text(case: CaseRecord) -> str:
+    text = case.body.strip()
+    source_line = ""
+    for line in text.splitlines():
+        lower = line.lower()
+        if lower.startswith(("stack overflow question:", "github issue:", "issue url:", "question url:")):
+            source_line = line.strip()
+            break
+
+    for marker in ("Question body:", "Issue body:", "Original issue:"):
+        if marker in text:
+            text = text.split(marker, 1)[1].strip()
+            break
+
+    if source_line:
+        text = f"{source_line}\n\n{text}"
+    return _clip(text, 3200)
+
+
+def _support_reply_text(value: Any) -> str:
+    text = _clean_text(value)
+    if not text:
+        return "No customer-facing reply was generated."
+    if not _looks_jsonish(text):
+        return _plain_markdown(_clip(text, 1800))
+
+    try:
+        from .services import parse_json_object
+
+        parsed = parse_json_object(text)
+        extracted = _text_from_structured_reply(parsed)
+        if extracted:
+            return _plain_markdown(_clip(extracted, 1800))
+    except Exception:
+        pass
+
+    extracted = _extract_common_json_text(text)
+    if extracted:
+        return _plain_markdown(_clip(extracted, 1800))
+    return "The saved customer reply was malformed JSON. Review the analyzed case before sending a response externally."
+
+
+def _text_from_structured_reply(value: Any) -> str:
+    if isinstance(value, dict):
+        if "customer_reply" in value:
+            nested = _text_from_structured_reply(value["customer_reply"])
+            if nested:
+                return nested
+        if "response" in value:
+            nested = _text_from_structured_reply(value["response"])
+            if nested:
+                return nested
+
+        parts: list[str] = []
+        for key in ("acknowledgment", "summary", "answer", "recommendation", "next_steps"):
+            item = value.get(key)
+            if isinstance(item, str) and item.strip():
+                parts.append(item.strip())
+
+        advice = value.get("key_advice")
+        if isinstance(advice, list):
+            for item in advice:
+                if not isinstance(item, dict):
+                    continue
+                topic = str(item.get("topic") or "").strip()
+                detail = str(item.get("advice") or item.get("detail") or "").strip()
+                if topic and detail:
+                    parts.append(f"{topic}: {detail}")
+                elif detail:
+                    parts.append(detail)
+
+        if parts:
+            return "\n\n".join(parts)
+
+        flattened = _flatten_text_values(value)
+        return "\n\n".join(flattened[:6])
+
+    if isinstance(value, list):
+        flattened = _flatten_text_values(value)
+        return "\n\n".join(flattened[:6])
+
+    if isinstance(value, str):
+        return value.strip()
+    return ""
+
+
+def _flatten_text_values(value: Any) -> list[str]:
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if cleaned and not cleaned.startswith(("http://", "https://")):
+            return [cleaned]
+        return []
+    if isinstance(value, dict):
+        parts: list[str] = []
+        for key, item in value.items():
+            if str(key).lower() in {"url", "link", "id"}:
+                continue
+            parts.extend(_flatten_text_values(item))
+        return parts
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            parts.extend(_flatten_text_values(item))
+        return parts
     return []
+
+
+def _parse_structured_string(value: str) -> Any:
+    stripped = value.strip()
+    if not stripped.startswith(("{", "[")):
+        return None
+    try:
+        return json.loads(stripped, strict=False)
+    except json.JSONDecodeError:
+        pass
+    try:
+        return ast.literal_eval(stripped)
+    except (ValueError, SyntaxError):
+        return None
+
+
+def _humanize_list_item(value: Any) -> str:
+    if isinstance(value, str):
+        parsed = _parse_structured_string(value)
+        if parsed is not None:
+            return _humanize_list_item(parsed)
+        return value.strip()
+
+    if isinstance(value, list):
+        return "; ".join(_humanize_list_item(item) for item in value if _humanize_list_item(item))
+
+    if isinstance(value, dict):
+        action = _first_text(value, ("action", "label", "title", "step", "task", "summary", "topic"))
+        detail_value = _first_present(value, ("details", "detail", "guidance", "data", "output", "environment", "target", "reason"))
+        detail = _humanize_detail(detail_value)
+
+        if action and detail:
+            return f"{action}: {detail}"
+        if action:
+            return action
+        if detail:
+            return detail
+        return _humanize_detail(value)
+
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _humanize_detail(value: Any) -> str:
+    if isinstance(value, str):
+        parsed = _parse_structured_string(value)
+        if parsed is not None:
+            return _humanize_detail(parsed)
+        return value.strip()
+
+    if isinstance(value, list):
+        parts = [_humanize_detail(item) for item in value]
+        return "; ".join(part for part in parts if part)
+
+    if isinstance(value, dict):
+        parts = []
+        for key, item in value.items():
+            if str(key).lower() in {"id", "url", "link"}:
+                continue
+            text = _humanize_detail(item)
+            if text:
+                label = str(key).replace("_", " ").strip().capitalize()
+                parts.append(f"{label}: {text}")
+        return "; ".join(parts)
+
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _first_text(value: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        item = value.get(key)
+        if isinstance(item, str) and item.strip():
+            return item.strip()
+    return ""
+
+
+def _first_present(value: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        if key in value and value[key] not in (None, "", [], {}):
+            return value[key]
+    return None
+
+
+def _extract_common_json_text(text: str) -> str:
+    keys = ("acknowledgment", "summary", "answer", "recommendation", "advice", "detail")
+    parts = []
+    for key in keys:
+        pattern = re.compile(rf'"{key}"\s*:\s*"((?:\\.|[^"\\])*)"', flags=re.DOTALL)
+        for match in pattern.finditer(text):
+            value = _decode_jsonish_string(match.group(1))
+            if value:
+                parts.append(value)
+            if len(parts) >= 6:
+                break
+    return "\n\n".join(parts[:6])
+
+
+def _decode_jsonish_string(value: str) -> str:
+    try:
+        return json.loads(f'"{value}"', strict=False).strip()
+    except json.JSONDecodeError:
+        return value.replace("\\n", "\n").replace('\\"', '"').strip()
+
+
+def _clean_internal_notes(value: Any) -> str:
+    text = _clean_text(value)
+    if not text:
+        return "No internal notes."
+    if "Validation:" in text:
+        text = text.split("Validation:", 1)[0].strip()
+    if _looks_jsonish(text):
+        extracted = _extract_common_json_text(text)
+        return extracted or "Internal validation details were omitted from this external-style report."
+    return text
+
+
+def _looks_jsonish(text: str) -> bool:
+    stripped = text.strip()
+    return (
+        stripped.startswith(("{", "["))
+        or '"customer_reply"' in stripped
+        or "'validation':" in stripped
+        or '"response"' in stripped
+    )
 
 
 def _plain_markdown(markdown: str) -> str:
     text = re.sub(r"^#{1,6}\s*", "", markdown, flags=re.MULTILINE)
+    text = re.sub(r"```[a-zA-Z0-9_-]*", "", text)
+    text = text.replace("```", "")
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", text)
     text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
     text = re.sub(r"`([^`]*)`", r"\1", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
@@ -255,10 +533,16 @@ def _tex_block(value: str) -> str:
     return "\n\n".join(_latex_escape(part.replace("\n", " ")) for part in paragraphs)
 
 
+def _tex_original_issue(value: str) -> str:
+    lines = [line.strip() for line in value.strip().splitlines()]
+    parts = [_latex_escape(line) for line in lines if line]
+    return "\n\n".join(parts) if parts else "N/A"
+
+
 def _tex_items(items: list[str]) -> str:
     if not items:
         return r"\item N/A"
-    return "\n".join(rf"\item {_latex_escape(item)}" for item in items)
+    return "\n".join(rf"\item {_latex_escape(_humanize_list_item(item))}" for item in items if _humanize_list_item(item))
 
 
 def _tex_steps(steps: list[TroubleshootingStep]) -> str:
@@ -300,6 +584,11 @@ def _latex_escape(value: str) -> str:
 
 
 def _normalize_for_latex(value: str) -> str:
+    if "â" in value or "Â" in value:
+        try:
+            value = value.encode("latin1", errors="ignore").decode("utf-8", errors="ignore") or value
+        except UnicodeError:
+            pass
     replacements = {
         "\u2018": "'",
         "\u2019": "'",
@@ -309,6 +598,7 @@ def _normalize_for_latex(value: str) -> str:
         "\u2014": "-",
         "\u2026": "...",
         "\u00a0": " ",
+        "\u00b0": " degrees",
         "\u200b": "",
         "\ufeff": "",
         "\u2192": "->",
@@ -316,7 +606,11 @@ def _normalize_for_latex(value: str) -> str:
         "\u2264": "<=",
         "\u00d7": "x",
     }
-    return "".join(replacements.get(char, char) for char in value)
+    return "".join(
+        replacements.get(char, char)
+        for char in value
+        if char in "\n\t" or (ord(char) >= 32 and not 0x7F <= ord(char) <= 0x9F)
+    )
 
 
 def _clip(value: str, limit: int) -> str:
